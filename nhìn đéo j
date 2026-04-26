@@ -6,56 +6,78 @@ local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 local TARGET_NAME = "Generator"
 local RANGE = 15
 local lastCheck = 0
-
-local function fastClick(button)
-    if not button or not button.Visible then return end
-    local events = {"MouseButton1Click", "MouseButton1Down", "Activated"}
-    for _, event in ipairs(events) do
-        if button[event] then
-            for _, connection in pairs(getconnections(button[event])) do
-                connection:Fire()
-            end
-        end
-    end
-end
+local cooldownUntil = 0 
 
 local function solveTask(gui)
+    local hasWorked = false
     for _, v in pairs(gui:GetDescendants()) do
         if v:IsA("GuiButton") and v.Visible then
-            if v:IsA("ImageButton") or v:IsA("TextButton") then
-                if v.BackgroundColor3.R > 0.5 or v.Name:lower():find("off") or v.Name:lower():find("wire") then
-                    fastClick(v)
+            local n = v.Name:lower()
+            
+            -- Cần gạt: Giữ cho đến khi xong
+            if n:find("lever") or n:find("handle") or n:find("pull") then
+                hasWorked = true
+                pcall(function()
+                    for _, c in pairs(getconnections(v.MouseButton1Down)) do c:Fire() end
+                end)
+            end
+
+            -- Công tắc: Bật nếu đang đỏ
+            if n:find("switch") or (v:IsA("ImageButton") and v.ImageColor3.R > 0.5) then
+                if v.BackgroundColor3.R > 0.5 or v.ImageColor3.R > 0.5 then
+                    hasWorked = true
+                    for _, c in pairs(getconnections(v.MouseButton1Click)) do c:Fire() end
                 end
-            else
-                fastClick(v)
+            end
+
+            -- Dây điện: Click nối nhanh
+            if n:find("wire") or n:find("node") then
+                hasWorked = true
+                for _, c in pairs(getconnections(v.MouseButton1Down)) do c:Fire() end
+                task.wait(0.05)
+                for _, c in pairs(getconnections(v.MouseButton1Up)) do c:Fire() end
             end
         end
     end
+    return hasWorked
 end
 
 RunService.Heartbeat:Connect(function()
-    if tick() - lastCheck < 0.1 then return end
+    if tick() < cooldownUntil then return end
+    if tick() - lastCheck < 0.3 then return end
     lastCheck = tick()
 
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
 
-    for _, obj in pairs(workspace:GetChildren()) do
-        if obj.Name == TARGET_NAME then
-            local pos = obj:IsA("Model") and obj:GetPivot().Position or (obj:IsA("BasePart") and obj.Position)
-            if pos and (hrp.Position - pos).Magnitude <= RANGE then
-                local p = obj:FindFirstChildOfClass("ProximityPrompt") or obj:FindFirstChild("Prompt", true)
-                if p and fireproximityprompt then fireproximityprompt(p) end
-            end
-        end
-    end
-
+    local guiOpen = false
     for _, gui in pairs(PlayerGui:GetChildren()) do
         if gui:IsA("ScreenGui") and gui.Enabled then
             local n = gui.Name:lower()
             if n:find("gen") or n:find("repair") or n:find("task") or gui:FindFirstChild("MainFrame", true) then
+                guiOpen = true
                 solveTask(gui)
+            end
+        end
+    end
+
+    -- Nếu không có UI (đã làm xong hoặc chưa bắt đầu)
+    if not guiOpen then
+        for _, obj in pairs(workspace:GetChildren()) do
+            if obj.Name == TARGET_NAME then
+                local pos = obj:IsA("Model") and obj:GetPivot().Position or (obj:IsA("BasePart") and obj.Position)
+                if pos and (hrp.Position - pos).Magnitude <= RANGE then
+                    local p = obj:FindFirstChildOfClass("ProximityPrompt") or obj:FindFirstChild("Prompt", true)
+                    if p and fireproximityprompt then 
+                        fireproximityprompt(p)
+                        -- Đợi UI hiện lên, nếu sau 1s không hiện tức là máy đã hỏng/xong
+                        task.wait(1) 
+                        if not PlayerGui:FindFirstChild(TARGET_NAME, true) then
+                            cooldownUntil = tick() + 4 -- Nghỉ 4s sau khi tương tác xong một máy
+                        end
+                    end
+                end
             end
         end
     end

@@ -1,0 +1,60 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+-- CẤU HÌNH --
+local TARGET_NAME = "Generator" -- Tên vật thể trong Workspace
+local OPEN_DISTANCE = 10 -- Khoảng cách trỉnh tùy m (Studs)
+
+-- Hàm tìm UI dựa trên sự thay đổi trạng thái khi ở gần vật thể
+local function findAndToggleUI(state)
+    -- Cách 1: Tìm ProximityPrompt và giả lập kích hoạt
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj.Name == TARGET_NAME and (obj:IsA("BasePart") or obj:IsA("Model")) then
+            local prompt = obj:FindFirstChildOfClass("ProximityPrompt") or obj:FindFirstChild("Prompt", true)
+            
+            if prompt and state == true then
+                -- Nếu ở gần, chúng ta giả lập như đã nhấn phím tương tác để game tự mở UI
+                fireproximityprompt(prompt) 
+                return -- Dừng lại khi đã kích hoạt thành công
+            end
+        end
+    end
+
+    -- Cách 2: Nếu game không dùng Prompt mà dùng UI ẩn/hiện theo Script riêng
+    -- Chúng ta quét các ScreenGui vừa mới "Enabled" hoặc "Visible"
+    if state == false then
+        -- Khi đi xa, tự động đóng các UI có tên liên quan
+        for _, gui in pairs(PlayerGui:GetChildren()) do
+            if gui:IsA("ScreenGui") and (gui.Name:lower():find("gen") or gui.Name:lower():find("repair")) then
+                gui.Enabled = false
+            end
+        end
+    end
+end
+
+-- VÒNG LẶP KIỂM TRA KHOẢNG CÁCH
+local isNear = false
+RunService.Heartbeat:Connect(function()
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    local found = false
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj.Name == TARGET_NAME then
+            local pos = obj:IsA("Model") and obj:GetPivot().Position or obj.Position
+            if (hrp.Position - pos).Magnitude <= OPEN_DISTANCE then
+                found = true
+                break
+            end
+        end
+    end
+
+    -- Chỉ kích hoạt 1 lần khi bước vào phạm vi hoặc đi ra khỏi phạm vi
+    if found ~= isNear then
+        isNear = found
+        findAndToggleUI(isNear)
+    end
+end)

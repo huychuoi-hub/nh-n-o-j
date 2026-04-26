@@ -3,19 +3,25 @@ local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
-local RANGE = 15
-local cooldownUntil = 0
+-- === CẤU HÌNH ===
+local RANGE = 15 -- Khoảng cách tự động kích hoạt task
+local CLICK_DELAY = 0.15 -- Độ trễ giữa các lần bấm (tránh bị game kick/lag)
 local solvedButtons = {}
-local lastLeverTick = 0
+local lastInteractTick = 0
 
--- Hàm click tổng lực
+print("--- [FULL] AUTO TASK LOADED ---")
+
+-- === HÀM TRỢ GIÚP ===
+
+-- Hàm click chuẩn cho hầu hết các Executor (Hỗ trợ getconnections)
 local function universalClick(v)
     if not v or not v.Visible then return end
     pcall(function()
-        local events = {"MouseButton1Down", "MouseButton1Click", "Activated", "MouseButton1Up"}
+        local events = {"MouseButton1Click", "MouseButton1Down", "Activated"}
         for _, e in ipairs(events) do
-            if v[e] then
-                for _, connection in pairs(getconnections(v[e])) do
+            local cons = getconnections(v[e])
+            if cons then
+                for _, connection in pairs(cons) do
                     connection:Fire()
                 end
             end
@@ -23,115 +29,129 @@ local function universalClick(v)
     end)
 end
 
+-- So sánh màu sắc với sai số nhỏ (RGB delta)
+local function isColorMatch(c1, c2)
+    local delta = math.abs(c1.R - c2.R) + math.abs(c1.G - c2.G) + math.abs(c1.B - c2.B)
+    return delta < 0.2 -- Ngưỡng khớp màu
+end
+
+-- === LOGIC GIẢI TASK ===
+
 local function solveTask(gui)
-    local nodes = {left = {}, right = {}}
-    local buttons = {}
+    local leftNodes = {}
+    local rightNodes = {}
+    local genericButtons = {}
     local levers = {}
 
+    -- 1. Phân loại Object trong UI
     for _, v in pairs(gui:GetDescendants()) do
-        if v:IsA("GuiButton") and v.Visible then
-            local n = v.Name:lower()
-            -- 1. Nhận diện Dây (Wire)
-            if n:find("wire") or n:find("node") or v:FindFirstChildOfClass("ImageLabel") then
-                if not solvedButtons[v] then
-                    if v.AbsolutePosition.X < (gui.AbsoluteSize.X / 2) then
-                        table.insert(nodes.left, v)
-                    else
-                        table.insert(nodes.right, v)
-                    end
+        if v:IsA("GuiButton") and v.Visible and v.AbsoluteSize.X > 0 then
+            local name = v.Name:lower()
+            
+            -- Nhận diện Wires (Dây điện)
+            if name:find("wire") or name:find("node") or name:find("point") then
+                if v.AbsolutePosition.X < (gui.AbsoluteSize.X / 2) then
+                    table.insert(leftNodes, v)
+                else
+                    table.insert(rightNodes, v)
                 end
-            -- 2. Nhận diện Nút (Button)
-            elseif n:find("button") or n:find("switch") or v:IsA("ImageButton") then
-                table.insert(buttons, v)
-            -- 3. Nhận diện Cần gạt (Lever)
-            elseif n:find("lever") or n:find("handle") or n:find("pull") or n:find("stick") then
+            -- Nhận diện Cần gạt
+            elseif name:find("lever") or name:find("handle") or name:find("switch") then
                 table.insert(levers, v)
+            -- Nhận diện Nút bấm chung
+            else
+                table.insert(genericButtons, v)
             end
         end
     end
 
-    -- BƯỚC 1: NỐI DÂY
-    local wireFound = false
-    for _, l in ipairs(nodes.left) do
-        for _, r in ipairs(nodes.right) do
-            local cL = l:IsA("ImageButton") and l.ImageColor3 or l.BackgroundColor3
-            local cR = r:IsA("ImageButton") and r.ImageColor3 or r.BackgroundColor3
-            if cL == cR and not solvedButtons[l] then
-                universalClick(l)
-                task.wait(0.05)
-                universalClick(r)
-                solvedButtons[l], solvedButtons[r] = true, true
-                wireFound = true
+    -- 2. Xử lý nối dây theo MÀU (Ưu tiên số 1)
+    for _, l in ipairs(leftNodes) do
+        if not solvedButtons[l] then
+            local colorL = l:IsA("ImageButton") and l.ImageColor3 or l.BackgroundColor3
+            for _, r in ipairs(rightNodes) do
+                local colorR = r:IsA("ImageButton") and r.ImageColor3 or r.BackgroundColor3
+                
+                if isColorMatch(colorL, colorR) and not solvedButtons[r] then
+                    universalClick(l)
+                    task.wait(CLICK_DELAY)
+                    universalClick(r)
+                    solvedButtons[l], solvedButtons[r] = true, true
+                    print("Connected wire: " .. tostring(colorL))
+                    return -- Thoát để loop tiếp theo xử lý cặp mới
+                end
             end
         end
     end
-    if wireFound then return end
 
-    -- BƯỚC 2: BẤM NÚT (Nếu màu tối/đen)
-    local buttonFound = false
-    for _, b in ipairs(buttons) do
+    -- 3. Xử lý nút bấm (Nếu là nút cần kích hoạt - màu tối/đỏ/v.v.)
+    for _, b in ipairs(genericButtons) do
         if not solvedButtons[b] then
             local c = b:IsA("ImageButton") and b.ImageColor3 or b.BackgroundColor3
-            if (c.R + c.G + c.B < 0.8) then
+            -- Ví dụ: Click nếu nút màu tối (giả định là nút chưa bấm)
+            if (c.R + c.G + c.B < 1.5) then 
                 universalClick(b)
                 solvedButtons[b] = true
-                buttonFound = true
+                task.wait(CLICK_DELAY)
+                return
             end
         end
     end
-    if buttonFound then return end
 
-    -- BƯỚC 3: CẦN GẠT (Kéo liên tục)
-    if tick() - lastLeverTick > 0.1 then
-        lastLeverTick = tick()
-        for _, lev in ipairs(levers) do
-            pcall(function()
-                for _, c in pairs(getconnections(lev.MouseButton1Down)) do c:Fire() end
-                task.wait(0.05)
-                for _, c in pairs(getconnections(lev.MouseButton1Up)) do c:Fire() end
-            end)
-        end
+    -- 4. Xử lý cần gạt (Spam click/hold)
+    for _, lev in ipairs(levers) do
+        universalClick(lev)
     end
 end
 
-RunService.Heartbeat:Connect(function()
-    if tick() < cooldownUntil then return end
+-- === VÒNG LẶP HỆ THỐNG ===
 
+RunService.Heartbeat:Connect(function()
     local char = LocalPlayer.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
 
-    -- Tự động quét mọi ProximityPrompt gần nhân vật
-    local foundPrompt = false
-    for _, v in pairs(workspace:GetDescendants()) do
-        if v:IsA("ProximityPrompt") then
-            local parent = v.Parent
-            local pos = parent:IsA("Model") and parent:GetPivot().Position or (parent:IsA("BasePart") and parent.Position)
-            if pos and (hrp.Position - pos).Magnitude <= RANGE then
-                if fireproximityprompt then fireproximityprompt(v) end
-                foundPrompt = true
+    -- Tự động tương tác với vật phẩm trong Map (ProximityPrompt)
+    if tick() - lastInteractTick > 0.6 then -- Quét mỗi 0.6 giây
+        for _, v in pairs(workspace:GetDescendants()) do
+            if v:IsA("ProximityPrompt") then
+                local parent = v.Parent
+                local pos = parent:IsA("BasePart") and parent.Position or parent:GetPivot().Position
+                if (hrp.Position - pos).Magnitude <= RANGE then
+                    if fireproximityprompt then 
+                        fireproximityprompt(v)
+                        lastInteractTick = tick()
+                    end
+                end
             end
         end
     end
 
-    -- Giải UI
-    local isBusy = false
+    -- Kiểm tra xem có UI task nào đang mở không
+    local isDoingTask = false
     for _, gui in pairs(PlayerGui:GetChildren()) do
-        if gui:IsA("ScreenGui") and gui.Enabled and #gui:GetChildren() > 0 then
-            -- Tự nhận diện UI task dựa trên số lượng nút bấm bên trong
-            local btnCount = 0
-            for _, x in pairs(gui:GetDescendants()) do if x:IsA("GuiButton") then btnCount = btnCount + 1 end end
-            
-            if btnCount > 2 then -- Nếu UI có nhiều hơn 2 nút, coi như là Task
-                isBusy = true
+        -- Lọc bỏ các UI không phải là Task (Chat, v.v.)
+        if gui:IsA("ScreenGui") and gui.Enabled and gui.Name ~= "Chat" and gui.Name ~= "BubbleChat" then
+            -- Kiểm tra xem UI có chứa nút bấm nào không
+            local hasButtons = false
+            for _, child in pairs(gui:GetDescendants()) do
+                if child:IsA("GuiButton") and child.Visible then
+                    hasButtons = true
+                    break
+                end
+            end
+
+            if hasButtons then
+                isDoingTask = true
                 solveTask(gui)
+                break
             end
         end
     end
 
-    -- Nếu xong task, nghỉ 4s
-    if not isBusy and next(solvedButtons) ~= nil then
+    -- Reset bộ nhớ khi không còn UI nào mở
+    if not isDoingTask and next(solvedButtons) ~= nil then
         solvedButtons = {}
-        cooldownUntil = tick() + 4
+        print("Task clean up.")
     end
 end)

@@ -3,155 +3,128 @@ local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
--- === CẤU HÌNH ===
-local RANGE = 15 -- Khoảng cách tự động kích hoạt task
-local CLICK_DELAY = 0.15 -- Độ trễ giữa các lần bấm (tránh bị game kick/lag)
-local solvedButtons = {}
-local lastInteractTick = 0
+local RANGE = 15
+local TARGET_NAME = "Generator"
+local solved = {}
+local generatorCache = {}
 
-print("--- [FULL] AUTO TASK LOADED ---")
-
--- === HÀM TRỢ GIÚP ===
-
--- Hàm click chuẩn cho hầu hết các Executor (Hỗ trợ getconnections)
-local function universalClick(v)
-    if not v or not v.Visible then return end
-    pcall(function()
-        local events = {"MouseButton1Click", "MouseButton1Down", "Activated"}
-        for _, e in ipairs(events) do
-            local cons = getconnections(v[e])
-            if cons then
-                for _, connection in pairs(cons) do
-                    connection:Fire()
-                end
-            end
+-- Chức năng Anti-Lag: Thu thập danh sách máy phát điện 1 lần duy nhất
+local function updateGeneratorCache()
+    table.clear(generatorCache)
+    for _, v in pairs(workspace:GetDescendants()) do
+        if v:IsA("ProximityPrompt") and (v.Name:find(TARGET_NAME) or v.Parent.Name:find(TARGET_NAME)) then
+            table.insert(generatorCache, v)
         end
+    end
+end
+updateGeneratorCache()
+
+-- Hàm click tối ưu
+local function forceClick(v, holdTime)
+    if not v or not v.Visible then return end
+    task.spawn(function() -- Chạy trong thread riêng để không block loop chính
+        pcall(function()
+            v:Activate()
+            if getconnections then
+                for _, con in pairs(getconnections(v.MouseButton1Down)) do con:Fire() end
+                if holdTime then task.wait(holdTime) end
+                for _, con in pairs(getconnections(v.MouseButton1Up)) do con:Fire() end
+            end
+        end)
     end)
 end
 
--- So sánh màu sắc với sai số nhỏ (RGB delta)
-local function isColorMatch(c1, c2)
-    local delta = math.abs(c1.R - c2.R) + math.abs(c1.G - c2.G) + math.abs(c1.B - c2.B)
-    return delta < 0.2 -- Ngưỡng khớp màu
-end
+-- Logic giải đố (Giữ nguyên nhưng tối ưu vòng lặp)
+local function solveTaskLogic(gui)
+    local buttons = {}
+    local images = {}
 
--- === LOGIC GIẢI TASK ===
-
-local function solveTask(gui)
-    local leftNodes = {}
-    local rightNodes = {}
-    local genericButtons = {}
-    local levers = {}
-
-    -- 1. Phân loại Object trong UI
-    for _, v in pairs(gui:GetDescendants()) do
+    for _, v in ipairs(gui:GetDescendants()) do -- Dùng ipairs cho bảng mảng
         if v:IsA("GuiButton") and v.Visible and v.AbsoluteSize.X > 0 then
-            local name = v.Name:lower()
-            
-            -- Nhận diện Wires (Dây điện)
-            if name:find("wire") or name:find("node") or name:find("point") then
-                if v.AbsolutePosition.X < (gui.AbsoluteSize.X / 2) then
-                    table.insert(leftNodes, v)
-                else
-                    table.insert(rightNodes, v)
-                end
-            -- Nhận diện Cần gạt
-            elseif name:find("lever") or name:find("handle") or name:find("switch") then
-                table.insert(levers, v)
-            -- Nhận diện Nút bấm chung
-            else
-                table.insert(genericButtons, v)
+            table.insert(buttons, v)
+            local img = v:FindFirstChildOfClass("ImageLabel")
+            if img and img.Image ~= "" then
+                images[v] = img.Image
             end
         end
     end
 
-    -- 2. Xử lý nối dây theo MÀU (Ưu tiên số 1)
-    for _, l in ipairs(leftNodes) do
-        if not solvedButtons[l] then
-            local colorL = l:IsA("ImageButton") and l.ImageColor3 or l.BackgroundColor3
-            for _, r in ipairs(rightNodes) do
-                local colorR = r:IsA("ImageButton") and r.ImageColor3 or r.BackgroundColor3
-                
-                if isColorMatch(colorL, colorR) and not solvedButtons[r] then
-                    universalClick(l)
-                    task.wait(CLICK_DELAY)
-                    universalClick(r)
-                    solvedButtons[l], solvedButtons[r] = true, true
-                    print("Connected wire: " .. tostring(colorL))
-                    return -- Thoát để loop tiếp theo xử lý cặp mới
+    -- 1. Nối dây
+    for btn, imgID in pairs(images) do
+        if not solved[btn] then
+            for otherBtn, otherImgID in pairs(images) do
+                if btn ~= otherBtn and imgID == otherImgID and not solved[otherBtn] then
+                    forceClick(btn)
+                    task.wait(0.05)
+                    forceClick(otherBtn)
+                    solved[btn], solved[otherBtn] = true, true
+                    return
                 end
             end
         end
     end
 
-    -- 3. Xử lý nút bấm (Nếu là nút cần kích hoạt - màu tối/đỏ/v.v.)
-    for _, b in ipairs(genericButtons) do
-        if not solvedButtons[b] then
-            local c = b:IsA("ImageButton") and b.ImageColor3 or b.BackgroundColor3
-            -- Ví dụ: Click nếu nút màu tối (giả định là nút chưa bấm)
-            if (c.R + c.G + c.B < 1.5) then 
-                universalClick(b)
-                solvedButtons[b] = true
-                task.wait(CLICK_DELAY)
-                return
-            end
+    -- 2. Logic nút bấm (Màu sắc)
+    local categories = {}
+    for _, btn in ipairs(buttons) do
+        if not solved[btn] and not images[btn] then
+            local key = btn.BackgroundColor3:ToHex()
+            categories[key] = categories[key] or {}
+            table.insert(categories[key], btn)
         end
     end
 
-    -- 4. Xử lý cần gạt (Spam click/hold)
-    for _, lev in ipairs(levers) do
-        universalClick(lev)
+    for _, list in pairs(categories) do
+        if #list > 0 then -- Đơn giản hóa: Bấm loại đầu tiên tìm thấy
+            for _, btn in ipairs(list) do
+                forceClick(btn)
+                solved[btn] = true
+            end
+            break
+        end
     end
 end
 
--- === VÒNG LẶP HỆ THỐNG ===
-
-RunService.Heartbeat:Connect(function()
-    local char = LocalPlayer.Character
-    local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-
-    -- Tự động tương tác với vật phẩm trong Map (ProximityPrompt)
-    if tick() - lastInteractTick > 0.6 then -- Quét mỗi 0.6 giây
-        for _, v in pairs(workspace:GetDescendants()) do
-            if v:IsA("ProximityPrompt") then
-                local parent = v.Parent
-                local pos = parent:IsA("BasePart") and parent.Position or parent:GetPivot().Position
-                if (hrp.Position - pos).Magnitude <= RANGE then
+-- Vòng lặp chính tối ưu (Sử dụng task.wait dài hơn hoặc RunService)
+task.spawn(function()
+    while true do
+        local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        
+        if hrp then
+            -- Tương tác bằng Cache thay vì quét toàn bộ Workspace
+            for _, prompt in ipairs(generatorCache) do
+                if prompt.Parent and (hrp.Position - prompt.Parent:GetPivot().Position).Magnitude <= RANGE then
                     if fireproximityprompt then 
-                        fireproximityprompt(v)
-                        lastInteractTick = tick()
+                        fireproximityprompt(prompt) 
                     end
                 end
             end
-        end
-    end
 
-    -- Kiểm tra xem có UI task nào đang mở không
-    local isDoingTask = false
-    for _, gui in pairs(PlayerGui:GetChildren()) do
-        -- Lọc bỏ các UI không phải là Task (Chat, v.v.)
-        if gui:IsA("ScreenGui") and gui.Enabled and gui.Name ~= "Chat" and gui.Name ~= "BubbleChat" then
-            -- Kiểm tra xem UI có chứa nút bấm nào không
-            local hasButtons = false
-            for _, child in pairs(gui:GetDescendants()) do
-                if child:IsA("GuiButton") and child.Visible then
-                    hasButtons = true
+            -- Quét UI nhẹ nhàng hơn
+            local currentGui = nil
+            for _, gui in ipairs(PlayerGui:GetChildren()) do
+                if gui:IsA("ScreenGui") and gui.Enabled and #gui:GetChildren() > 0 then
+                    currentGui = gui
                     break
                 end
             end
 
-            if hasButtons then
-                isDoingTask = true
-                solveTask(gui)
-                break
+            if currentGui then
+                solveTaskLogic(currentGui)
+            else
+                table.clear(solved) -- Clear table thay vì tạo table mới để tiết kiệm bộ nhớ
             end
         end
-    end
-
-    -- Reset bộ nhớ khi không còn UI nào mở
-    if not isDoingTask and next(solvedButtons) ~= nil then
-        solvedButtons = {}
-        print("Task clean up.")
+        
+        task.wait(0.5) -- Tăng thời gian chờ lên một chút để CPU "thở"
     end
 end)
+
+-- Cập nhật cache mỗi 30 giây nếu map có thay đổi
+task.spawn(function()
+    while task.wait(30) do
+        updateGeneratorCache()
+    end
+end)
+
+print("--- [OPTIMIZED] Generator Auto Task Running ---")
